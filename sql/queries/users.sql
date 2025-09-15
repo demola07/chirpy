@@ -25,3 +25,11 @@ SET
     hashed_password = COALESCE(NULLIF(sqlc.arg(hashed_password), ''), hashed_password)
 WHERE id = sqlc.arg(id)
 RETURNING *;
+
+-- name: UpgradeUserToRed :one
+UPDATE users
+SET
+    updated_at = NOW(),
+    is_chirpy_red = TRUE
+WHERE id = sqlc.arg(id)
+RETURNING *;

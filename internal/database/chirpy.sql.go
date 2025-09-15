@@ -51,7 +51,6 @@ func (q *Queries) DeleteAllChirpy(ctx context.Context) error {
 }
 
 const deleteChirpyByID = `-- name: DeleteChirpyByID :exec
-
 DELETE FROM chirpy
 WHERE id = $1 AND user_id = $2
 `
@@ -61,9 +60,6 @@ type DeleteChirpyByIDParams struct {
 	UserID uuid.UUID
 }
 
-// -- name DeleteChirpyByID :one
-// DELETE FROM chirpy
-// WHERE id = $1 AND user_id = $2;
 func (q *Queries) DeleteChirpyByID(ctx context.Context, arg DeleteChirpyByIDParams) error {
 	_, err := q.db.ExecContext(ctx, deleteChirpyByID, arg.ID, arg.UserID)
 	return err
@@ -88,12 +84,49 @@ func (q *Queries) GetChirpyByID(ctx context.Context, id uuid.UUID) (Chirpy, erro
 }
 
 const listChirpy = `-- name: ListChirpy :many
-SELECT id, created_at, updated_at, body, user_id FROM chirpy
+SELECT id, created_at, updated_at, body, user_id
+FROM chirpy
 ORDER BY created_at ASC
 `
 
 func (q *Queries) ListChirpy(ctx context.Context) ([]Chirpy, error) {
 	rows, err := q.db.QueryContext(ctx, listChirpy)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Chirpy
+	for rows.Next() {
+		var i Chirpy
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Body,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChirpyByAuthor = `-- name: ListChirpyByAuthor :many
+SELECT id, created_at, updated_at, body, user_id
+FROM chirpy
+WHERE user_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListChirpyByAuthor(ctx context.Context, userID uuid.UUID) ([]Chirpy, error) {
+	rows, err := q.db.QueryContext(ctx, listChirpyByAuthor, userID)
 	if err != nil {
 		return nil, err
 	}

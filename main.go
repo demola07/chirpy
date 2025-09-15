@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"sync/atomic"
 
 	"database/sql"
@@ -25,6 +26,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey       string
 }
 
 type User struct {
@@ -34,6 +36,16 @@ type User struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
+}
+
+type UpgradeEvent struct {
+	Event string      `json:"event"`
+	Data  UpgradeData `json:"data"`
+}
+
+type UpgradeData struct {
+	UserID string `json:"user_id"`
 }
 
 type Chirp struct {
@@ -178,11 +190,41 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) fetchChirps(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.db.ListChirpy(r.Context())
+	var chirps []database.Chirpy
+	var err error
+
+	// Check if author_id filter is provided
+	if s := r.URL.Query().Get("author_id"); s != "" {
+		authorID, parseErr := uuid.Parse(s)
+		if parseErr != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid author_id")
+			return
+		}
+		// Fetch chirps by specific author
+		chirps, err = cfg.db.ListChirpyByAuthor(r.Context(), authorID)
+	} else {
+		// Fetch all chirps
+		chirps, err = cfg.db.ListChirpy(r.Context())
+	}
 	if err != nil {
+		log.Printf("Error fetching chirps: %s", err)
 		respondWithError(w, http.StatusInternalServerError, "Could not fetch chirps")
 		return
 	}
+
+	sortOrder := r.URL.Query().Get("sort")
+	if sortOrder == "" {
+		sortOrder = "asc"
+	}
+
+	sort.Slice(chirps, func(i, j int) bool {
+		if sortOrder == "desc" {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		}
+		return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+	})
+
+	// Map DB rows → response type
 	resCh := make([]Chirp, len(chirps))
 	for i, chirp := range chirps {
 		resCh[i] = Chirp{
@@ -194,7 +236,7 @@ func (cfg *apiConfig) fetchChirps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respondWithJSON(w, http.StatusOK, chirps)
+	respondWithJSON(w, http.StatusOK, resCh)
 }
 
 func (cfg *apiConfig) fetchChirp(w http.ResponseWriter, r *http.Request) {
@@ -343,6 +385,7 @@ func dbUserToAPIUser(dbUser database.User, token string, refreshToken string) Us
 		Email:        dbUser.Email,
 		Token:        token,
 		RefreshToken: refreshToken,
+		IsChirpyRed:  dbUser.IsChirpyRed,
 	}
 }
 
@@ -554,11 +597,56 @@ func (cfg *apiConfig) handleDeleteChirp(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (cfg *apiConfig) handleUpgradeUser(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if apiKey != cfg.polkaKey {
+		respondWithError(w, http.StatusUnauthorized, "Invalid API key")
+		return
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	defer r.Body.Close()
+
+	var event UpgradeEvent
+	if err := decoder.Decode(&event); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	if event.Event != "user.upgraded" {
+		respondWithError(w, http.StatusNoContent, "cannot handle event")
+		return
+	} else if event.Event == "user.upgraded" {
+		userID, err := uuid.Parse(event.Data.UserID)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid user ID")
+			return
+		}
+		_, err = cfg.db.UpgradeUserToRed(r.Context(), userID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				respondWithError(w, http.StatusNotFound, "User not found")
+			} else {
+				log.Printf("Error upgrading user: %s", err)
+				respondWithError(w, http.StatusInternalServerError, "Could not upgrade user")
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	JWT_SECRET := os.Getenv("JWT_SECRET")
 	platform := os.Getenv("PLATFORM")
+	POLKA_KEY := os.Getenv("POLKA_KEY")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -573,6 +661,7 @@ func main() {
 		db:        dbQueries,
 		platform:  platform,
 		jwtSecret: JWT_SECRET,
+		polkaKey:  POLKA_KEY,
 	}
 
 	fileServer := http.FileServer(http.Dir("."))
@@ -603,6 +692,8 @@ func main() {
 	mux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
 
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handleDeleteChirp)
+
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.handleUpgradeUser)
 
 	srv := &http.Server{
 		Addr:    ":8080",

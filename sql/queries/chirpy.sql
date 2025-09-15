@@ -13,7 +13,14 @@ RETURNING *;
 DELETE FROM chirpy;
 
 -- name: ListChirpy :many
-SELECT * FROM chirpy
+SELECT id, created_at, updated_at, body, user_id
+FROM chirpy
+ORDER BY created_at ASC;
+
+-- name: ListChirpyByAuthor :many
+SELECT id, created_at, updated_at, body, user_id
+FROM chirpy
+WHERE user_id = $1
 ORDER BY created_at ASC;
 
 -- name: GetChirpyByID :one

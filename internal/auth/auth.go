@@ -88,3 +88,15 @@ func MakeRefreshToken() (string, error) {
 	// Convert the random bytes to a hex string (64 chars long)
 	return hex.EncodeToString(bytes), nil
 }
+
+func GetAPIKey(headers http.Header) (string, error) {
+	apiKey := headers.Get("Authorization")
+	if apiKey == "" {
+		return "", errors.New("api key header missing")
+	}
+	const prefix = "ApiKey "
+	if len(apiKey) <= len(prefix) || apiKey[:len(prefix)] != prefix {
+		return "", errors.New("invalid api key header format")
+	}
+	return apiKey[len(prefix):], nil
+}
