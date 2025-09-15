@@ -16,3 +16,12 @@ DELETE FROM users;
 -- name: GetUserByEmail :one
 SELECT * FROM users
 WHERE email = $1;
+
+-- name: UpdateUser :one
+UPDATE users
+SET
+    updated_at = NOW(),
+    email = COALESCE(NULLIF(sqlc.arg(email), ''), email),
+    hashed_password = COALESCE(NULLIF(sqlc.arg(hashed_password), ''), hashed_password)
+WHERE id = sqlc.arg(id)
+RETURNING *;
